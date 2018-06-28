@@ -14,7 +14,6 @@ struct RawSocket {
     handle: i32,
 }
 
-// TODO: Create custom error and return a result with this error type.
 
 impl RawSocket {
     /// Create a new raw socket.
@@ -22,28 +21,31 @@ impl RawSocket {
         let handle = unsafe { socket(AF_PACKET, SOCK_RAW, libc::ETH_P_ALL.to_be() as i32) };
         match handle {
             -1 => Err(io::Error::last_os_error()),
-            _ => Ok(RawSocket { handle }),
+            _ => Ok {
+                match unsafe { libc::bind(handle, libc::) } {
+                    -1 => Err(io::Error::last_os_error()),
+                    _ => Ok ( RawSocket { handle }),
+                    }
+                },
             }
         }
+}
 
-    fn read_bytes(&self, bytes_to_read: usize) -> io::Result<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(bytes_to_read);
-        // Vector is already of that capacity
-        unsafe {
-            bytes.set_len(bytes_to_read);
-        };
-        // read the bytes
+
+impl io::Read for RawSocket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let bytes_read = unsafe {
-            libc::read(
+            libc::recv(
                 self.handle,
-                bytes.as_mut_slice().as_mut_ptr() as *mut c_void,
-                bytes_to_read,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len(),
+                0
             )
         };
 
         match bytes_read {
             -1 => Err(io::Error::last_os_error()),
-            _ => Ok(bytes),
+            _ => Ok(bytes_read as usize),
         }
     }
 }
@@ -67,7 +69,10 @@ mod tests {
     #[test]
     fn read_from_socket() {
         use super::RawSocket;
-        let sock = RawSocket::new().expect("Create socket failed");
-        sock.read_bytes(10).unwrap();
+        use std::io::Read;
+        let mut bytes = [0;10];
+        let mut sock = RawSocket::new().expect("Create socket failed");
+        sock.read(&mut bytes).unwrap();
+        println!("{:#?}", bytes);
     }
 }
