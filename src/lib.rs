@@ -12,6 +12,7 @@ const SOCK_RAW: c_int = 3;
 const IPPROTO_ICMP: c_int = 1;
 const IFNAMESIZE: usize = 16;
 const IFREQUNIONSIZE: usize = 24;
+const SIOCGIFINDEX: libc::c_ulong = 0x00008933;
 
 
 struct RawSocket {
@@ -120,14 +121,16 @@ impl RawSocket {
         }
 
         let sock = RawSocket { handle };
+        println!("sock created");
 
         let if_req = IfReq::with_if_name(interface)?;
         let mut req: Box<IfReq> = Box::new(if_req);
-        let SIOCGIFINDEX = 0x8933;
 
         if unsafe { libc::ioctl(sock.handle, SIOCGIFINDEX, &mut *req) } == -1 {
             return Err(io::Error::last_os_error());
         }
+
+        println!("ioctl run");
 
         let mut sll : libc::sockaddr_ll = unsafe {mem::zeroed()};
 
@@ -135,16 +138,18 @@ impl RawSocket {
         sll.sll_family = libc::AF_PACKET as u16;
         sll.sll_ifindex = req.ifr_ifindex();
         sll.sll_protocol = libc::ETH_P_ALL.to_be() as u16;
+        println!("{}", mem::size_of::<libc::sockaddr_ll>());
 
         unsafe {
             let addr_ptr = mem::transmute::<*mut libc::sockaddr_ll, *mut libc::sockaddr>(&mut sll);
             if libc::bind(
                 handle, 
                 addr_ptr as *mut libc::sockaddr,
-                mem::size_of::<libc::sockaddr_ll> as u32) == -1 {
+                mem::size_of::<libc::sockaddr_ll>() as u32) == -1 {
                 return Err(io::Error::last_os_error());
             }
         }
+        println!("bind run");
 
         Ok(sock)
     }
