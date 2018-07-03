@@ -70,7 +70,7 @@ mod interface_req {
 
     /// The IfReq struct from libc
     #[repr(C)]
-    struct IfReq {
+    pub struct IfReq {
         ifr_name: [c_char; IFNAMESIZE],
         union: IfReqUnion,
     }
@@ -131,13 +131,15 @@ mod interface_req {
 /// Raw module, for handling raw sockets
 mod raw_socket {
     use libc::{
-        c_int, c_void, close, recvfrom, sockaddr, sockaddr_ll, socket, socklen_t, AF_PACKET, send,
+        c_int, c_void, close, recvfrom, sockaddr, sockaddr_ll, socket, socklen_t, AF_PACKET, send, setsockopt, SO_BINDTODEVICE, SOL_SOCKET, bind,
     };
     use std::io;
     use std::io::{ Read, Write };
-
     use std::mem;
 
+    use interface_req::IfReq;
+
+    // TODO: should it be c_int or i32?
     const SOCK_RAW: c_int = 3;
     const ETH_P_ARP: u16 = 0x0003;
 
@@ -154,6 +156,18 @@ mod raw_socket {
             match handle {
                 -1 => Err(io::Error::last_os_error()),
                 _ => Ok(RawSocket { handle }),
+            }
+        }
+
+        /// Binds the socket to the given interface.
+        /// Interface name must not be longer then `IFNAMESIZE`
+        pub fn bind(&self, interface: &str) -> io::Result<()> {
+            unsafe {
+                let ifreq = IfReq::with_if_name(interface).expect("Failed to create IfReq");
+                match bind(self.handle, &ifreq.ifr_hwaddr(), mem::size_of::<sockaddr_ll>() as socklen_t) {
+                    -1 => Err(io::Error::last_os_error()),
+                    _ => Ok(()),
+                }
             }
         }
 
@@ -210,7 +224,7 @@ mod raw_socket {
         }
 
         fn flush(&mut self) -> io::Result<()> {
-            Ok(())
+            unimplemented!();
         }
     }
 }
@@ -238,10 +252,11 @@ mod tests {
     fn write_to_socket() {
         use super::raw_socket::RawSocket;
         use libc;
-        use std::io::Read;
-        // TODO add buf
+        use std::io::{Read, Write};
+        let bytes = "message".as_bytes();
         let mut sock = RawSocket::new().expect("Create socket failed");
-        sock.write(buf);
+        sock.bind("wlp2s0").expect("Failed to bind to loopback");
+        sock.write(bytes).expect("Failed to write to socket");
 
     }
 }
