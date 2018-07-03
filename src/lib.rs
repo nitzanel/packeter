@@ -1,188 +1,216 @@
 //! Packeter is a wrapper around libc for raw socket manipulation.
-
 #![deny(missing_docs)]
 #![feature(libc)]
 extern crate libc;
-use libc::{c_int, c_void, sockaddr_storage, socket, PF_PACKET};
 
-use std::mem;
-use std::io;
+mod interface_req {
+    use libc;
+    use libc::{
+        c_char, c_int, c_short, c_ulong, c_void, sockaddr, sockaddr_ll, sockaddr_storage, socket,
+        socklen_t, AF_PACKET,
+    };
 
-const SOCK_RAW: c_int = 3;
-const IPPROTO_ICMP: c_int = 1;
-const IFNAMESIZE: usize = 16;
-const IFREQUNIONSIZE: usize = 24;
-const SIOCGIFINDEX: libc::c_ulong = 0x00008933;
+    use std::io;
+    use std::mem;
+    /// Size of the interface name.
+    const IFNAMESIZE: usize = 16;
+    /// Size of the interface request union.
+    const IFREQUNIONSIZE: usize = 24;
+    /// Value of SIOCGIFINDEX to get an interface id by name.
+    const SIOCGIFINDEX: c_ulong = 0x00008933;
 
-
-struct RawSocket {
-    handle: i32,
-}
-
-#[repr(C)]
-struct IfReqUnion {
-    data: [u8; IFREQUNIONSIZE],
-}
-
-impl Default for IfReqUnion {
-    fn default() -> IfReqUnion {
-        IfReqUnion { data: [0; IFREQUNIONSIZE] }
-    }
-}
-
-impl IfReqUnion {
-    fn as_sockaddr(&self) -> libc::sockaddr {
-        let mut addr = libc::sockaddr {
-            sa_family: u16::from_be((self.data[0] as u16) << 8 | (self.data[1] as u16)),
-            sa_data: [0; 14],
-        };
-
-        for (i, b) in self.data[2..16].iter().enumerate() {
-            addr.sa_data[i] = *b as i8;
-        }
-
-        addr
+    /// The union part of the IfReq struct.
+    /// This part is implamented so we can use data as we want
+    #[repr(C)]
+    struct IfReqUnion {
+        data: [u8; IFREQUNIONSIZE],
     }
 
-    fn as_int(&self) -> libc::c_int {
-        libc::c_int::from_be((self.data[0] as libc::c_int) << 24|
-                             (self.data[1] as libc::c_int) << 16|
-                             (self.data[2] as libc::c_int) << 8|
-                             (self.data[3] as libc::c_int))
-    }
-
-    fn as_short(&self) -> libc::c_short {
-        libc::c_short::from_be((self.data[0] as libc::c_short) << 8 |
-                               (self.data[1] as libc::c_short))
-    }
-}
-
-#[repr(C)]
-struct IfReq {
-    ifr_name: [libc::c_char; IFNAMESIZE],
-    union: IfReqUnion,
-}
-
-impl Default for IfReq {
-    fn default() -> IfReq {
-        IfReq {
-            ifr_name: [0; IFNAMESIZE],
-            union: IfReqUnion::default(),
-        }
-    }
-}
-
-impl IfReq {
-    /// Create an interface request struct with the interace name set
-    pub fn with_if_name(if_name: &str) -> io::Result<IfReq> {
-        let mut if_req = IfReq::default();
-
-        if if_name.len() >= if_req.ifr_name.len() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Interface name too long."));
-        }
-
-        for (a, c) in if_req.ifr_name.iter_mut().zip(if_name.bytes()) {
-            *a = c as i8;
-        }
-
-        Ok(if_req)
-    }
-
-    pub fn ifr_hwaddr(&self) -> libc::sockaddr {
-        self.union.as_sockaddr()
-    }
-
-    pub fn ifr_broadaddr(&self) -> libc::sockaddr {
-        self.union.as_sockaddr()
-    }
-
-
-    pub fn ifr_ifindex(&self) -> libc::c_int {
-        self.union.as_int()
-    }
-
-    pub fn ifr_media(&self) -> libc::c_int {
-        self.union.as_int()
-    }
-
-    pub fn ifr_flags(&self) -> libc::c_short {
-        self.union.as_short()
-    }
-}
-
-
-impl RawSocket {
-    /// Create a new raw socket.
-    fn new(interface: &str) -> io::Result<Self> {
-        let handle = unsafe { socket(PF_PACKET, SOCK_RAW, libc::ETH_P_ALL.to_be() as i32) };
-
-        if handle == -1 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let sock = RawSocket { handle };
-        println!("sock created");
-
-        let if_req = IfReq::with_if_name(interface)?;
-        let mut req: Box<IfReq> = Box::new(if_req);
-
-        if unsafe { libc::ioctl(sock.handle, SIOCGIFINDEX, &mut *req) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
-
-        println!("ioctl run");
-
-        let mut sll : libc::sockaddr_ll = unsafe {mem::zeroed()};
-
-
-        sll.sll_family = libc::AF_PACKET as u16;
-        sll.sll_ifindex = req.ifr_ifindex();
-        sll.sll_protocol = libc::ETH_P_ALL.to_be() as u16;
-        println!("{}", mem::size_of::<libc::sockaddr_ll>());
-
-        unsafe {
-            let addr_ptr = mem::transmute::<*mut libc::sockaddr_ll, *mut libc::sockaddr>(&mut sll);
-            if libc::bind(
-                handle, 
-                addr_ptr as *mut libc::sockaddr,
-                mem::size_of::<libc::sockaddr_ll>() as u32) == -1 {
-                return Err(io::Error::last_os_error());
+    impl Default for IfReqUnion {
+        /// Creates an empty IfReqUnion
+        fn default() -> IfReqUnion {
+            IfReqUnion {
+                data: [0; IFREQUNIONSIZE],
             }
         }
-        println!("bind run");
-
-        Ok(sock)
     }
-}
 
+    /// The following functions allows us to get data as the format we want, without unsafe
+    /// casting.
+    impl IfReqUnion {
+        /// Get the IfReqUnion part as a sockaddr
+        fn as_sockaddr(&self) -> sockaddr {
+            let mut addr = sockaddr {
+                sa_family: u16::from_be((self.data[0] as u16) << 8 | (self.data[1] as u16)),
+                sa_data: [0; 14],
+            };
 
-impl io::Read for RawSocket {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
-        let mut addr_buf_sz: libc::socklen_t = mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t;
-        let bytes_read = unsafe {
-            let addr_ptr = mem::transmute::<*mut libc::sockaddr_ll, *mut libc::sockaddr>(&mut addr);
-            libc::recvfrom(
-                self.handle,
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len(),
-                0,
-                addr_ptr as *mut libc::sockaddr,
-                &mut addr_buf_sz,
-                )
-        };
+            for (i, b) in self.data[2..16].iter().enumerate() {
+                addr.sa_data[i] = *b as i8;
+            }
 
-        match bytes_read {
-            -1 => Err(io::Error::last_os_error()),
-            _ => Ok(bytes_read as usize),
+            addr
+        }
+
+        /// Get the IfReqUnion part as an int32
+        fn as_int(&self) -> c_int {
+            c_int::from_be(
+                (self.data[0] as c_int) << 24
+                    | (self.data[1] as c_int) << 16
+                    | (self.data[2] as c_int) << 8
+                    | (self.data[3] as c_int),
+            )
+        }
+
+        /// Get the IfReqUnion part as a int16
+        fn as_short(&self) -> c_short {
+            c_short::from_be((self.data[0] as c_short) << 8 | (self.data[1] as c_short))
         }
     }
+
+    /// The IfReq struct from libc
+    #[repr(C)]
+    struct IfReq {
+        ifr_name: [c_char; IFNAMESIZE],
+        union: IfReqUnion,
+    }
+
+    impl Default for IfReq {
+        /// Creates an empty IfReq
+        fn default() -> IfReq {
+            IfReq {
+                ifr_name: [0; IFNAMESIZE],
+                union: IfReqUnion::default(),
+            }
+        }
+    }
+
+    impl IfReq {
+        /// Create an interface request struct with the interace name set
+        pub fn with_if_name(if_name: &str) -> io::Result<IfReq> {
+            let mut if_req = IfReq::default();
+
+            if if_name.len() >= if_req.ifr_name.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Interface name too long.",
+                ));
+            }
+
+            for (a, c) in if_req.ifr_name.iter_mut().zip(if_name.bytes()) {
+                *a = c as i8;
+            }
+
+            Ok(if_req)
+        }
+
+        /// Get the hardware address
+        pub fn ifr_hwaddr(&self) -> sockaddr {
+            self.union.as_sockaddr()
+        }
+
+        pub fn ifr_broadaddr(&self) -> sockaddr {
+            self.union.as_sockaddr()
+        }
+
+        pub fn ifr_ifindex(&self) -> c_int {
+            self.union.as_int()
+        }
+
+        pub fn ifr_media(&self) -> c_int {
+            self.union.as_int()
+        }
+
+        pub fn ifr_flags(&self) -> c_short {
+            self.union.as_short()
+        }
+    }
+
 }
 
-impl Drop for RawSocket {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.handle);
+/// Raw module, for handling raw sockets
+mod raw_socket {
+    use libc::{
+        c_int, c_void, close, recvfrom, sockaddr, sockaddr_ll, socket, socklen_t, AF_PACKET, send,
+    };
+    use std::io;
+    use std::io::{ Read, Write };
+
+    use std::mem;
+
+    const SOCK_RAW: c_int = 3;
+    const ETH_P_ARP: u16 = 0x0003;
+
+    /// Wrapper around a file descriptor recieved from creating a socket.
+    pub struct RawSocket {
+        pub handle: i32,
+    }
+
+    impl RawSocket {
+        /// Create a new raw socket.
+        pub fn new() -> io::Result<Self> {
+            let handle = unsafe { socket(AF_PACKET, SOCK_RAW, ETH_P_ARP.to_be() as i32) };
+
+            match handle {
+                -1 => Err(io::Error::last_os_error()),
+                _ => Ok(RawSocket { handle }),
+            }
+        }
+
+        /// Recieve a single packet from the socket.
+        /// This method blocks untill the read is completed.
+        fn recvfrom(&self, buf: &mut [u8]) -> io::Result<usize> {
+            let mut sender_addr: sockaddr_ll = unsafe { mem::zeroed() };
+            let mut addr_buf_sz: socklen_t = mem::size_of::<sockaddr_ll>() as socklen_t;
+            unsafe {
+                // We need to cast the sender address (sockaddr_ll) into a sockaddr.
+                let addr_ptr = mem::transmute::<*mut sockaddr_ll, *mut sockaddr>(&mut sender_addr);
+                match recvfrom(
+                    self.handle,                     // file descriptor
+                    buf.as_mut_ptr() as *mut c_void, // pointer to buffer for frame content
+                    buf.len(),                       // frame content buffer length
+                    0,                               // flags
+                    addr_ptr as *mut sockaddr,       // pointer to buffer for sender address
+                    &mut addr_buf_sz,                // sender address buffer length
+                ) {
+                    -1 => Err(io::Error::last_os_error()),
+                    len => Ok(len as usize),
+                }
+            }
+        }
+
+        fn send_bytes(&self, buf: &[u8]) -> io::Result<usize> {
+            unsafe {
+                match send(self.handle, buf.as_ptr() as *const c_void, buf.len(), 0) {
+                    -1 => Err(io::Error::last_os_error()),
+                    len => Ok(len as usize),
+                }
+            }
+        }
+    }
+
+    impl Drop for RawSocket {
+        /// Close the socket handle (fd)
+        fn drop(&mut self) {
+            unsafe {
+                close(self.handle);
+            }
+        }
+    }
+
+    impl Read for RawSocket {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.recvfrom(buf)
+        }
+    }
+
+    impl Write for RawSocket {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.send_bytes(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
         }
     }
 }
@@ -191,17 +219,29 @@ impl Drop for RawSocket {
 mod tests {
     #[test]
     fn create_raw_socket() {
-        use super::RawSocket;
-        let sock = RawSocket::new("eno1").expect("Create socket failed");
+        use super::raw_socket::RawSocket;
+        let sock = RawSocket::new().expect("Create socket failed");
     }
 
     #[test]
     fn read_from_socket() {
-        use super::RawSocket;
+        use super::raw_socket::RawSocket;
+        use libc;
         use std::io::Read;
-        let mut bytes = [0;10];
-        let mut sock = RawSocket::new("eno1").expect("Create socket failed");
-        let result = sock.read(&mut bytes).unwrap();
-        println!("{:#?}", bytes);
+        let mut packet_buf: [u8; 1024] = [0; 1024];
+        let mut sock = RawSocket::new().expect("Create socket failed");
+        sock.read(&mut packet_buf)
+            .expect("Failed to recvfrom socket");
+    }
+
+    #[test]
+    fn write_to_socket() {
+        use super::raw_socket::RawSocket;
+        use libc;
+        use std::io::Read;
+        // TODO add buf
+        let mut sock = RawSocket::new().expect("Create socket failed");
+        sock.write(buf);
+
     }
 }
