@@ -3,7 +3,7 @@
 #![feature(libc)]
 extern crate libc;
 
-mod interface_req {
+mod low_level_interfaces {
     use libc;
     use libc::{
         c_char, c_int, c_short, c_ulong, c_void, sockaddr, sockaddr_ll, sockaddr_storage, socket,
@@ -25,6 +25,7 @@ mod interface_req {
     struct IfReqUnion {
         data: [u8; IFREQUNIONSIZE],
     }
+
 
     impl Default for IfReqUnion {
         /// Creates an empty IfReqUnion
@@ -131,13 +132,13 @@ mod interface_req {
 /// Raw module, for handling raw sockets
 mod raw_socket {
     use libc::{
-        c_int, c_void, close, recvfrom, sockaddr, sockaddr_ll, socket, socklen_t, AF_PACKET, send, setsockopt, SO_BINDTODEVICE, SOL_SOCKET, bind,
+        c_int, c_void, close, recvfrom, sockaddr, sockaddr_ll, socket, socklen_t, AF_PACKET, setsockopt, SO_BINDTODEVICE, SOL_SOCKET, bind, sendto,
     };
     use std::io;
     use std::io::{ Read, Write };
     use std::mem;
 
-    use interface_req::IfReq;
+    use low_level_interfaces::IfReq;
 
     // TODO: should it be c_int or i32?
     const SOCK_RAW: c_int = 3;
@@ -146,16 +147,18 @@ mod raw_socket {
     /// Wrapper around a file descriptor recieved from creating a socket.
     pub struct RawSocket {
         pub handle: i32,
+        interface: IfReq,
     }
 
     impl RawSocket {
         /// Create a new raw socket.
-        pub fn new() -> io::Result<Self> {
+        pub fn new(interface: String) -> io::Result<Self> {
+            let interface = IfReq::with_if_name(interface.as_str())?;
             let handle = unsafe { socket(AF_PACKET, SOCK_RAW, ETH_P_ARP.to_be() as i32) };
 
             match handle {
                 -1 => Err(io::Error::last_os_error()),
-                _ => Ok(RawSocket { handle }),
+                _ => Ok(RawSocket { handle, interface }),
             }
         }
 
@@ -164,12 +167,24 @@ mod raw_socket {
         pub fn bind(&self, interface: &str) -> io::Result<()> {
             unsafe {
                 let ifreq = IfReq::with_if_name(interface).expect("Failed to create IfReq");
-                match bind(self.handle, &ifreq.ifr_hwaddr(), mem::size_of::<sockaddr_ll>() as socklen_t) {
+                match bind(self.handle, &ifreq.ifr_hwaddr() as *const sockaddr, mem::size_of::<sockaddr_ll>() as socklen_t) {
                     -1 => Err(io::Error::last_os_error()),
                     _ => Ok(()),
                 }
             }
         }
+
+        fn send_bytes(&self, bytes: &[u8]) -> io::Result<usize> {
+            let length =  unsafe {
+                sendto(self.handle, bytes.as_ptr() as *const c_void , bytes.len(), 0, &self.interface.ifr_hwaddr(), mem::size_of::<sockaddr_ll>() as socklen_t)
+            };
+
+            match length {
+                -1 => Err(io::Error::last_os_error()),
+                _ => Ok(length as usize),
+            }
+        }
+
 
         /// Recieve a single packet from the socket.
         /// This method blocks untill the read is completed.
@@ -193,14 +208,6 @@ mod raw_socket {
             }
         }
 
-        fn send_bytes(&self, buf: &[u8]) -> io::Result<usize> {
-            unsafe {
-                match send(self.handle, buf.as_ptr() as *const c_void, buf.len(), 0) {
-                    -1 => Err(io::Error::last_os_error()),
-                    len => Ok(len as usize),
-                }
-            }
-        }
     }
 
     impl Drop for RawSocket {
@@ -234,7 +241,7 @@ mod tests {
     #[test]
     fn create_raw_socket() {
         use super::raw_socket::RawSocket;
-        let sock = RawSocket::new().expect("Create socket failed");
+        let sock = RawSocket::new("wlp2s0".to_string()).expect("Create socket failed");
     }
 
     #[test]
@@ -243,7 +250,7 @@ mod tests {
         use libc;
         use std::io::Read;
         let mut packet_buf: [u8; 1024] = [0; 1024];
-        let mut sock = RawSocket::new().expect("Create socket failed");
+        let mut sock = RawSocket::new("wlp2s0".to_string()).expect("Create socket failed");
         sock.read(&mut packet_buf)
             .expect("Failed to recvfrom socket");
     }
@@ -254,8 +261,8 @@ mod tests {
         use libc;
         use std::io::{Read, Write};
         let bytes = "message".as_bytes();
-        let mut sock = RawSocket::new().expect("Create socket failed");
-        sock.bind("wlp2s0").expect("Failed to bind to loopback");
+        let mut sock = RawSocket::new("wlp2s0".to_string()).expect("Create socket failed");
+        //sock.bind("wlp2s0").expect("Failed to bind to interface wlp2s0");
         sock.write(bytes).expect("Failed to write to socket");
 
     }
